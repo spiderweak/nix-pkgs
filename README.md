@@ -1,84 +1,70 @@
 # nix-pkgs
 
-Personal Nix flake of packages missing from nixpkgs or kept up to date faster than it, built from official upstream releases and updated automatically.
+A Nix flake of packages that are missing from nixpkgs or that should track upstream faster than nixpkgs does. Each package is built from official upstream releases, and a scheduled CI job proposes version bumps as pull requests.
 
-## Packages
+`nix flake show github:spiderweak/nix-pkgs` lists the available packages.
 
-| Package       | Source                                       |
-| ------------- | -------------------------------------------- |
-| `claude-code` | Anthropic's official native binary (unfree)  |
+## Using it
 
-## Layout
-
-```
-pkgs/<name>/
-├── package.nix    # the build recipe, edited by hand
-├── sources.json   # version + hash, written by update.sh
-└── update.sh      # finds the latest version and rewrites sources.json
-```
-
-Every `pkgs/<name>/package.nix` is picked up automatically and exposed as `packages.<system>.<name>` and in `overlays.default`.
-
-## Using it from a NixOS / Home Manager config
-
-In your config's `flake.nix`:
+In a NixOS flake's inputs:
 
 ```nix
-inputs.nix-pkgs = {
-  url = "github:<you>/nix-pkgs";
+nix-pkgs = {
+  url = "github:spiderweak/nix-pkgs";
   inputs.nixpkgs.follows = "nixpkgs";
 };
 ```
 
-Then, in a NixOS module (pass `inputs` through `specialArgs`):
+then add the overlay in a NixOS module:
 
 ```nix
 nixpkgs.overlays = [ inputs.nix-pkgs.overlays.default ];
 ```
 
-and use the packages as usual, e.g. `home.packages = [ pkgs.claude-code ];`.
+The packages appear in `pkgs` under their directory names and **replace any nixpkgs package of the same name**. With `follows`, they build against the consumer's nixpkgs; this repository's `flake.lock` only affects its own builds and CI.
 
-Unfree packages still need to be allowed on the consuming machine, for example:
+Without the overlay, use `inputs.nix-pkgs.packages.<system>.<name>` (built against this repository's pinned nixpkgs), or `nix run github:spiderweak/nix-pkgs#<name>` for a one-off.
 
-```nix
-nixpkgs.config.allowUnfreePredicate = pkg:
-  builtins.elem (lib.getName pkg) [ "claude-code" ];
-```
+Unfree packages still have to be allowed by the consumer (`nixpkgs.config.allowUnfree` or `allowUnfreePredicate`). The `allowUnfree` in this flake applies only to its own package set.
 
 To pick up a merged update: `nix flake update nix-pkgs`, then rebuild.
 
-## Updating by hand
+## Layout
 
-```sh
-nix develop -c pkgs/claude-code/update.sh           # only if a new version exists
-nix develop -c pkgs/claude-code/update.sh --force   # recompute the hash anyway
-nix build .#claude-code
+```
+pkgs/<name>/
+├── package.nix    # build recipe, edited by hand
+├── sources.json   # version + hash, written by update.sh
+└── update.sh      # finds the latest upstream version and rewrites sources.json
 ```
 
-## Adding a package
+Every `pkgs/<name>/package.nix` becomes `packages.<system>.<name>`, `checks.<system>.<name>`, and an attribute of `overlays.default`. Package-specific details (upstream source, wrapper choices, script options) live in those files.
 
-1. Create `pkgs/<name>/package.nix`, reading `version` and `hash` from `sources.json` with `lib.importJSON ./sources.json`.
-2. Create `pkgs/<name>/update.sh` that finds the latest version, computes the hash with `nix store prefetch-file --json <url>`, and rewrites `sources.json`. Make it executable.
+## Working on it
+
+```sh
+nix develop -c pkgs/<name>/update.sh   # bump sources.json if upstream has a newer release
+nix build .#<name>                     # build one package
+nix flake check                        # build everything, as CI does
+nix flake update                       # bump this repository's own nixpkgs pin
+```
+
+### Adding a package
+
+1. Write `pkgs/<name>/package.nix`, reading `version` and `hash` with `lib.importJSON ./sources.json`.
+2. Write an executable `pkgs/<name>/update.sh` that finds the latest version, computes its hash with `nix store prefetch-file --json <url>`, and rewrites `sources.json`. It must leave `sources.json` untouched when already current. It runs inside `nix develop`, which provides `curl` and `jq`; add other tools to the dev shell in `flake.nix`.
 3. Run it once, then `nix build .#<name>`.
-4. `git add` everything (flakes only see tracked files).
+4. `git add pkgs/<name>`: flakes only see tracked files.
 
 ## CI
 
-- **`update.yml`** runs daily (or manually). It runs every `pkgs/*/update.sh`, builds each package that changed, and opens one pull request per package. Each PR only touches that package's `sources.json`.
-- **`build.yml`** builds every package on pushes to `main`, on pull requests and on demand.
+- **`build.yml`** runs `nix flake check`, which builds every package, on pushes to `main`, on pull requests, and on demand.
+- **`update.yml`** runs daily and on demand. For each package whose update script changes `sources.json`, it builds the package, force-pushes the change to the `update/<name>` branch, and opens a pull request or retitles the one already open. A newer release replaces a pending update instead of stacking conflicting PRs, so don't push manual work to `update/*` branches.
+- **Dependabot** (`.github/dependabot.yml`) keeps the SHA-pinned actions current.
 
-### One-time GitHub setup
+Things to know:
 
-1. **Allow Actions to open PRs**: Settings → Actions → General → Workflow permissions → tick *Allow GitHub Actions to create and approve pull requests*.
-2. **Pin the actions to commit SHAs.** The workflows use `actions/checkout@v5` and `cachix/install-nix-action@v31`. Replace each tag with the full commit SHA of that release (keep the tag as a comment), so a moved or compromised tag can't change what runs:
-   ```yaml
-   - uses: actions/checkout@<full-sha> # v5
-   ```
-   Tools like `pinact` can do this automatically.
-3. **Commit `flake.lock`**: run `nix flake lock` once and commit it.
-
-### Notes
-
-- PRs opened by the update workflow don't trigger `build.yml` (GitHub doesn't start workflows from events created with the workflow token). That's why the update job builds each package before opening its PR.
-- On public repos, GitHub pauses scheduled workflows after 60 days without repository activity. If updates stop, re-enable the workflow in the Actions tab.
-- There is no binary cache: consumers build locally. For prebuilt binaries like `claude-code`, "building" is just downloading from upstream, verifying the hash and wrapping.
+- The repository setting *Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests* is enabled on this repo so `update.yml` can push branches and open PRs.
+- PRs opened by `update.yml` don't trigger `build.yml`: GitHub doesn't start workflows from events created with a workflow's own token. That's why the update job builds each package before pushing.
+- In public repositories, GitHub disables scheduled workflows after 60 days without repository activity. If updates stop, re-enable `update.yml` in the Actions tab.
+- There is no binary cache; consumers build locally. For a prebuilt upstream binary, "building" means downloading it, checking the pinned hash, and wrapping it.

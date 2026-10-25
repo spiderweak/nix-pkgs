@@ -36,6 +36,9 @@
     {
       packages = forAllSystems (pkgs: mkPackages pkgs.callPackage);
 
+      # `nix flake check` builds every package (this is what CI runs).
+      checks = self.packages;
+
       overlays.default = final: prev: mkPackages final.callPackage;
 
       # Tools needed by the update scripts: `nix develop -c pkgs/<name>/update.sh`

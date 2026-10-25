@@ -9,6 +9,10 @@ permissions:
   contents: write
   pull-requests: write
 
+# A manual run must not race the scheduled one on the same update branches.
+concurrency:
+  group: update-packages
+
 jobs:
   update:
     runs-on: ubuntu-latest
@@ -17,17 +21,19 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       BASE: ${{ github.event.repository.default_branch }}
     steps:
-      # Pin these to full commit SHAs (see README).
-      - uses: actions/checkout@v5
-      - uses: cachix/install-nix-action@v31
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
 
-      - name: Run update scripts and open one PR per package
+      - name: Run update scripts and open or refresh one PR per package
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898099+github-actions[bot]@users.noreply.github.com"
 
           for script in pkgs/*/update.sh; do
             pkg=$(basename "$(dirname "$script")")
+            # One branch and PR per package: a newer release replaces the
+            # pending update instead of stacking PRs that conflict with it.
+            branch="update/$pkg"
             git switch --quiet "$BASE"
 
             old=$(jq -r .version "pkgs/$pkg/sources.json")
@@ -40,17 +46,17 @@ jobs:
             if git diff --quiet -- "pkgs/$pkg"; then
               continue
             fi
-
             new=$(jq -r .version "pkgs/$pkg/sources.json")
-            branch="update/$pkg-$new"
 
-            if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
-              echo "$pkg: PR for $new already open"
+            if git ls-remote --exit-code --heads origin "$branch" >/dev/null \
+              && git fetch --quiet --depth=1 origin "$branch" \
+              && git diff --quiet FETCH_HEAD -- "pkgs/$pkg"; then
+              echo "$pkg: $new already on $branch"
               git checkout -- "pkgs/$pkg"
               continue
             fi
 
-            # Build before opening the PR: PRs opened with the workflow token
+            # Build before pushing: PRs opened with the workflow token
             # don't trigger the build workflow on their own.
             if ! nix build ".#$pkg" --no-link --print-build-logs; then
               echo "::warning::$pkg $new failed to build, no PR opened"
@@ -58,13 +64,20 @@ jobs:
               continue
             fi
 
-            git switch --quiet -c "$branch"
+            title="$pkg: $old -> $new"
+            git switch --quiet -C "$branch"
             git add "pkgs/$pkg"
-            git commit --quiet -m "$pkg: $old -> $new"
-            git push --quiet origin "$branch"
-            gh pr create \
-              --base "$BASE" \
-              --head "$branch" \
-              --title "$pkg: $old -> $new" \
-              --body "Automated update. Built successfully in CI. Only \`pkgs/$pkg/sources.json\` changed."
+            git commit --quiet -m "$title"
+            git push --quiet --force origin "$branch"
+
+            pr=$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty')
+            if [ -n "$pr" ]; then
+              gh pr edit "$pr" --title "$title"
+            else
+              gh pr create \
+                --base "$BASE" \
+                --head "$branch" \
+                --title "$title" \
+                --body "Automated update. Built successfully in CI. Only \`pkgs/$pkg/sources.json\` changed."
+            fi
           done
