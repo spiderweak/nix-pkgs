@@ -18,7 +18,7 @@ jobs:
       BASE: ${{ github.event.repository.default_branch }}
     steps:
       # Pin these to full commit SHAs (see README).
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31
 
       - name: Run update scripts and open one PR per package

@@ -16,7 +16,7 @@ jobs:
       NIX_CONFIG: experimental-features = nix-command flakes
     steps:
       # Pin these to full commit SHAs (see README).
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31
 
       - name: Check flake
