@@ -1,0 +1,31 @@
+name: Build packages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      NIX_CONFIG: experimental-features = nix-command flakes
+    steps:
+      # Pin these to full commit SHAs (see README).
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+
+      - name: Check flake
+        run: nix flake check --no-build
+
+      - name: Build every package
+        run: |
+          for pkg in $(nix eval --json .#packages.x86_64-linux --apply builtins.attrNames | jq -r '.[]'); do
+            echo "::group::$pkg"
+            nix build ".#$pkg" --no-link --print-build-logs
+            echo "::endgroup::"
+          done
