@@ -53,7 +53,7 @@ nix flake update                       # bump this repository's own nixpkgs pin
 
 1. Write `pkgs/<name>/package.nix`, reading `version` and `hash` with `lib.importJSON ./sources.json`.
 2. Write an executable `pkgs/<name>/update.sh` that finds the latest version, computes its hash with `nix store prefetch-file --json <url>`, and rewrites `sources.json`. It must leave `sources.json` untouched when already current. It runs inside `nix develop`, which provides `curl` and `jq`; add other tools to the dev shell in `flake.nix`.
-3. Run it once, then `nix build .#<name>`.
+3. Seed `sources.json` with `{"version": "0", "hash": ""}` (the script compares against the current version, so the file must exist), run the script once, then `nix build .#<name>`.
 4. `git add pkgs/<name>`: flakes only see tracked files.
 
 ## CI
